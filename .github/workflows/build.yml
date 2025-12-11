@@ -1,90 +1,115 @@
-name: Build
+name: Build Release Artifacts
 
 on:
   push:
-  pull_request:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+env:
+  CONFIG: Release
+  BUILD_SERVER: "1"
 
 jobs:
-  build:
-    runs-on: ubuntu-22.04
 
-    env:
-      CONFIG: Release
-      BUILD_SERVER: 1
+  linux-docker:
+    name: Build Linux .so (Docker 32-bit)
+    runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
+      - name: Checkout repository (with submodules)
         uses: actions/checkout@v4
         with:
-          submodules: recursive   # penting untuk omp-sdk
+          submodules: recursive
 
-      - name: Install dependencies
+      - name: Prepare build folder (uid 1000 required by container)
         run: |
-          sudo dpkg --add-architecture i386
-          sudo apt-get update
+          mkdir -p docker/build
+          sudo chown 1000:1000 docker/build
 
-          # Linux toolchain
+      - name: Build Docker image
+        run: |
+          docker build -t omp-easing-functions/build:ubuntu-18.04 docker/build_ubuntu-18.04/
+
+      - name: Run build in Docker container
+        env:
+          CONFIG: ${{ env.CONFIG }}
+          BUILD_SERVER: ${{ env.BUILD_SERVER }}
+        run: |
+          docker run --rm -t \
+            -w /code \
+            -v "${{ github.workspace }}:/code" \
+            -v "${{ github.workspace }}/docker/build:/code/build" \
+            -e CONFIG=${CONFIG} \
+            -e BUILD_SERVER=${BUILD_SERVER} \
+            omp-easing-functions/build:ubuntu-18.04
+
+      - name: Upload Linux .so artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-so
+          path: |
+            docker/build/**/*.so
+            docker/build/*.so
+
+
+  windows-cross:
+    name: Build Windows .dll (MinGW 32-bit)
+    runs-on: ubuntu-latest
+    needs: linux-docker  # Opsional, hapus jika tidak diperlukan
+
+    steps:
+      - name: Checkout repository (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install MinGW 32-bit toolchain
+        run: |
+          sudo apt-get update
           sudo apt-get install -y \
-            clang \
+            g++-mingw-w64-i686 \
+            gcc-mingw-w64-i686 \
+            binutils-mingw-w64-i686 \
+            mingw-w64-common \
+            mingw-w64-i686-dev \
             ninja-build \
             cmake \
-            gcc-multilib \
-            g++-multilib \
-            libc6:i386 \
-            libstdc++6:i386
+            build-essential
 
-          # Windows (mingw-w64) – i686 = 32-bit
-          sudo apt-get install -y \
-            mingw-w64 \
-            binutils-mingw-w64-i686 \
-            gcc-mingw-w64-i686 \
-            g++-mingw-w64-i686
-
-      #########################################
-      # LINUX 32-BIT BUILD
-      #########################################
-      - name: Configure Linux (32-bit)
+      - name: Verify MinGW installation
         run: |
-          cmake -S . -B build-linux32 \
-            -G Ninja \
-            -DCMAKE_C_FLAGS="-m32" \
-            -DCMAKE_CXX_FLAGS="-m32" \
-            -DCMAKE_BUILD_TYPE=$CONFIG \
-            -DSTATIC_STDCXX=true \
-            -DBUILD_SERVER=$BUILD_SERVER
+          # Check compiler versions
+          i686-w64-mingw32-gcc --version || echo "gcc not found"
+          i686-w64-mingw32-g++ --version || echo "g++ not found"
+          i686-w64-mingw32-windres --version || echo "windres not found"
+          
+          # List available compilers
+          ls -la /usr/bin/*-mingw32-*
 
-      - name: Build Linux (32-bit)
-        run: cmake --build build-linux32 --parallel
-
-      #########################################
-      # WINDOWS 32-BIT BUILD
-      #########################################
-      - name: Configure Windows (32-bit)
+      - name: Configure Windows 32-bit build
         run: |
+          # Configure dengan toolchain 32-bit
           cmake -S . -B build-win32 \
             -G Ninja \
             -DCMAKE_SYSTEM_NAME=Windows \
             -DCMAKE_C_COMPILER=i686-w64-mingw32-gcc \
             -DCMAKE_CXX_COMPILER=i686-w64-mingw32-g++ \
             -DCMAKE_RC_COMPILER=i686-w64-mingw32-windres \
-            -DCMAKE_BUILD_TYPE=$CONFIG \
-            -DSTATIC_STDCXX=true \
-            -DBUILD_SERVER=$BUILD_SERVER
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_FIND_ROOT_PATH=/usr/i686-w64-mingw32
 
-      - name: Build Windows (32-bit)
-        run: cmake --build build-win32 --parallel
+      - name: Build Windows 32-bit DLL
+        run: |
+          cmake --build build-win32 --config Release --parallel
+          
+          # List built files
+          find build-win32 -name "*.dll" -o -name "*.exe" | xargs -I {} file {} || true
 
-      #########################################
-      # ARTIFACTS
-      #########################################
-      - name: Upload Linux Artifact
+      - name: Upload Windows 32-bit .dll artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: linux32-build
-          path: build-linux32/
-
-      - name: Upload Windows Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: win32-build
-          path: build-win32/
+          name: windows-dll-32bit
+          path: |
+            build-win32/**/*.dll
+            build-win32/*.dll
