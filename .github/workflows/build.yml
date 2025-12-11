@@ -64,12 +64,13 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Install MinGW 32-bit toolchain
+      - name: Install MinGW 32-bit toolchain (win32 threads)
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            g++-mingw-w64-i686 \
-            gcc-mingw-w64-i686 \
+            mingw-w64 \
+            gcc-mingw-w64-i686-win32 \
+            g++-mingw-w64-i686-win32 \
             binutils-mingw-w64-i686 \
             mingw-w64-common \
             mingw-w64-i686-dev \
@@ -77,42 +78,92 @@ jobs:
             cmake \
             build-essential
 
-      - name: Verify MinGW installation
+      - name: Verify MinGW installation and headers
         run: |
           echo "=== Checking MinGW compilers ==="
           i686-w64-mingw32-gcc --version || echo "Warning: gcc not found"
           i686-w64-mingw32-g++ --version || echo "Warning: g++ not found"
           i686-w64-mingw32-windres --version || echo "Warning: windres not found"
+          
+          echo "=== Checking for Windows headers ==="
+          find /usr -name "Winsock2.h" 2>/dev/null | head -5
+          ls -la /usr/i686-w64-mingw32/include/ 2>/dev/null | head -10
+          
+          # Test if we can find Winsock2
+          echo "=== Testing Winsock2.h location ==="
+          i686-w64-mingw32-gcc -xc -E -v - 2>&1 | grep -i include || true
+
+      - name: Create MinGW toolchain file
+        run: |
+          cat > toolchain-mingw32.cmake << 'EOF'
+          # MinGW 32-bit toolchain for cross-compilation
+          set(CMAKE_SYSTEM_NAME Windows)
+          set(CMAKE_SYSTEM_PROCESSOR i686)
+          
+          # Specify the cross compiler
+          set(CMAKE_C_COMPILER i686-w64-mingw32-gcc)
+          set(CMAKE_CXX_COMPILER i686-w64-mingw32-g++)
+          set(CMAKE_RC_COMPILER i686-w64-mingw32-windres)
+          
+          # Target environment root
+          set(CMAKE_FIND_ROOT_PATH /usr/i686-w64-mingw32)
+          
+          # Modify default behavior of FIND_XXX() commands
+          set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
+          set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
+          set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
+          
+          # Disable NEON and enable SSE2 for x86
+          add_compile_definitions(GLM_FORCE_SSE2)
+          add_compile_options(-UGLM_FORCE_NEON)
+          
+          # 32-bit specific flags
+          add_compile_options(-m32 -msse2 -mfpmath=sse)
+          
+          # Linker flags for static linking (reduce dependencies)
+          set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -m32 -static-libgcc -static-libstdc++ -static")
+          set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -m32 -static-libgcc -static-libstdc++ -static")
+          
+          # Windows specific defines
+          add_compile_definitions(WIN32 _WIN32 _WINDOWS NOMINMAX)
+          
+          # Additional include paths if needed
+          include_directories(SYSTEM /usr/i686-w64-mingw32/include)
+          EOF
 
       - name: Configure Windows 32-bit build
         run: |
           echo "=== Configuring for Windows 32-bit ==="
           
-          # Configure CMake dengan flag untuk disable NEON dan enable SSE2
+          # Clean any previous builds
+          rm -rf build-win32
+          
+          # Configure with explicit Windows settings
           cmake -S . -B build-win32 \
             -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE=toolchain-mingw32.cmake \
             -DCMAKE_SYSTEM_NAME=Windows \
             -DCMAKE_C_COMPILER=i686-w64-mingw32-gcc \
             -DCMAKE_CXX_COMPILER=i686-w64-mingw32-g++ \
             -DCMAKE_RC_COMPILER=i686-w64-mingw32-windres \
             -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_CXX_FLAGS="-UGLM_FORCE_NEON -DGLM_FORCE_SSE2 -m32 -msse2 -mfpmath=sse" \
-            -DCMAKE_C_FLAGS="-UGLM_FORCE_NEON -m32 -msse2 -mfpmath=sse" \
-            -DCMAKE_SHARED_LINKER_FLAGS="-static-libgcc -static-libstdc++ -m32" \
-            -DCMAKE_EXE_LINKER_FLAGS="-static-libgcc -static-libstdc++ -m32"
+            -DCMAKE_C_FLAGS="-m32 -UGLM_FORCE_NEON -DGLM_FORCE_SSE2 -DWIN32 -D_WIN32 -D_WINDOWS" \
+            -DCMAKE_CXX_FLAGS="-m32 -UGLM_FORCE_NEON -DGLM_FORCE_SSE2 -DWIN32 -D_WIN32 -D_WINDOWS" \
+            -DCMAKE_SHARED_LINKER_FLAGS="-static-libgcc -static-libstdc++ -static -m32 -Wl,--enable-stdcall-fixup" \
+            -DCMAKE_EXE_LINKER_FLAGS="-static-libgcc -static-libstdc++ -static -m32"
 
       - name: Build Windows 32-bit DLL
         run: |
           echo "=== Building Windows DLL ==="
           
-          # Build dengan parallel jobs
-          cmake --build build-win32 --config Release --parallel $(nproc)
+          # Build with verbose output for debugging
+          cmake --build build-win32 --config Release --parallel $(nproc) --verbose
           
           echo "=== Build completed ==="
           
-          # List all generated files
-          echo "Generated files:"
-          find build-win32 -name "*.dll" -o -name "*.exe" | while read f; do
+          # Check what was generated
+          echo "Generated files in build-win32:"
+          find build-win32 -type f \( -name "*.dll" -o -name "*.exe" -o -name "*.a" -o -name "*.lib" \) | while read f; do
             echo "- $f"
             file "$f" || true
           done
@@ -125,3 +176,36 @@ jobs:
             build-win32/**/*.dll
             build-win32/*.dll
           if-no-files-found: error
+
+  # Optional: Docker-based Windows build as fallback
+  windows-docker:
+    name: Build Windows .dll (Docker Fallback)
+    runs-on: ubuntu-latest
+    needs: [windows-cross]
+    if: failure()  # Only run if windows-cross fails
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      
+      - name: Build with dockcross
+        run: |
+          # Use dockcross for reliable Windows cross-compilation
+          docker run --rm \
+            -v "$(pwd):/work" \
+            -w /work \
+            dockcross/windows-shared-x86 \
+            /bin/bash -c "
+              mkdir -p build-dockcross &&
+              cd build-dockcross &&
+              cmake .. -G Ninja -DCMAKE_BUILD_TYPE=Release &&
+              cmake --build . --config Release --parallel
+            "
+      
+      - name: Upload dockcross artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-dll-dockcross
+          path: build-dockcross/*.dll
