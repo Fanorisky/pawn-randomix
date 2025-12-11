@@ -10,7 +10,7 @@
 || build_server="$BUILD_SERVER"
 
 docker build \
-    -t omp-bigint/build:ubuntu-18.04 \
+    -t omp-easing-functions/build:ubuntu-18.04 \
     build_ubuntu-18.04/ \
 || exit 1
 
@@ -30,4 +30,4 @@ docker run \
     -v $PWD/build:/code/build \
     -e CONFIG=${config} \
     -e BUILD_SERVER=${build_server} \
-    omp-bigint/build:ubuntu-18.04
+    omp-easing-functions/build:ubuntu-18.04

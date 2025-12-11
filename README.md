@@ -1,4 +1,4 @@
-# open.mp BigInt Component
+# open.mp Easing-Functions Component
 
 A lightweight open.mp server component that adds signed 64-bit integer support to Pawn scripts. It exposes a `BigInt` tag plus a collection of arithmetic, conversion, and comparison natives so game-mode authors can safely store counters such as bank balances, experience totals, and economy statistics without overflowing the default 32-bit cell size.
 
