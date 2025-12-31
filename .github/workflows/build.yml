@@ -1,4 +1,4 @@
-name: Build Release Artifacts
+name: Build Optimized
 
 on:
   push:
@@ -6,91 +6,53 @@ on:
       - "v*"
   workflow_dispatch:
 
-env:
-  CONFIG: Release
-  BUILD_SERVER: "1"
-
 jobs:
-
-  linux-docker:
-    name: Build Linux .so (32-bit)
-    runs-on: ubuntu-latest
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        include:
+          - os: ubuntu-latest
+            cflags: "-m32 -O3 -march=native -ffast-math -funroll-loops -flto -fomit-frame-pointer"
+            ext: ".so"
+          - os: windows-latest
+            cflags: "/O2 /Oi /Ot /Ob2 /arch:AVX2 /fp:fast /GL"
+            ext: ".dll"
 
     steps:
-      - name: Checkout repository (with submodules)
+      - name: Checkout
         uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      - name: Prepare build folder (uid 1000 required by container)
+        
+      - name: Setup Linux Build
+        if: runner.os == 'Linux'
         run: |
-          mkdir -p docker/build
-          sudo chown 1000:1000 docker/build
+          sudo apt-get update
+          sudo apt-get install -y gcc-multilib g++-multilib
 
-      - name: Build Docker image
-        run: |
-          docker build -t omp-easing-functions/build:ubuntu-18.04 docker/build_ubuntu-18.04/
-
-      - name: Run build in Docker container
-        env:
-          CONFIG: ${{ env.CONFIG }}
-          BUILD_SERVER: ${{ env.BUILD_SERVER }}
-        run: |
-          docker run --rm -t \
-            -w /code \
-            -v "${{ github.workspace }}:/code" \
-            -v "${{ github.workspace }}/docker/build:/code/build" \
-            -e CONFIG=${CONFIG} \
-            -e BUILD_SERVER=${BUILD_SERVER} \
-            omp-easing-functions/build:ubuntu-18.04
-
-      - name: Upload Linux .so artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: linux-so
-          path: |
-            docker/build/**/*.so
-            docker/build/*.so
-
-  windows-simple:
-    name: Build Windows .dll (32-bit)
-    runs-on: windows-latest
-    
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
-    
-      - name: Configure CMake for 32-bit
-        run: |
-          cmake -S . -B build -G "Visual Studio 17 2022" -A Win32 -DCMAKE_BUILD_TYPE=Release
-        shell: powershell
-    
       - name: Build
         run: |
-          cmake --build build --config Release --parallel
-        shell: powershell
-    
-      - name: Organize artifacts
-        run: |
-          # Create artifacts folder
-          New-Item -ItemType Directory -Path "artifacts" -Force | Out-Null
+          if [ "$RUNNER_OS" == "Linux" ]; then
+            # Linux build dengan optimasi
+            g++ -m32 -shared -fPIC \
+              ${{ matrix.cflags }} \
+              -I./include \
+              -o libpawnrandomix${{ matrix.ext }} \
+              src/*.cpp
+            strip --strip-all libpawnrandomix${{ matrix.ext }}
+          else
+            # Windows build - menggunakan cl langsung
+            mkdir -p build
+            cd build
+            cl /LD ${{ matrix.cflags }} /Fe:pawnrandomix.dll \
+              ..\src\*.cpp /link /OPT:REF /OPT:ICF
+          fi
           
-          # Copy all DLLs to artifacts folder
-          Get-ChildItem -Path "build" -Filter "*.dll" -Recurse | ForEach-Object {
-            Copy-Item $_.FullName -Destination "artifacts\" -Force
-            Write-Host "Copied: $($_.Name)"
-          }
-          
-          # List all artifacts
-          Write-Host "`n=== Final artifacts ==="
-          Get-ChildItem -Path "artifacts" | Format-Table Name, Length
-        shell: powershell
-    
-      - name: Upload Windows DLL artifacts
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: windows-dll-32bit
-          path: artifacts/*.dll
-          if-no-files-found: error
+          name: pawnrandomix-${{ runner.os }}
+          path: |
+            libpawnrandomix${{ matrix.ext }}
+            pawnrandomix${{ matrix.ext }}
+            build/*.dll
