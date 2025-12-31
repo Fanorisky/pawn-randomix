@@ -111,7 +111,12 @@ stock Float:easeInOutBounce(Float:t) return GetEasingValue(t, EASE_IN_OUT_BOUNCE
 stock Float:easeNone(Float:t) return GetEasingValue(t, EASE_NONE);
 
 // helper function to get color from RGBA
-stock GetColorRGBA(red, green, blue, alpha = 255)
+stock GetColorFromRGBA(red, green, blue, alpha = 255)
 {
-    return (red << 24) | (green << 16) | (blue << 8) | alpha;
+    return ((red & 0xFF) << 24) | ((green & 0xFF) << 16) | ((blue & 0xFF) << 8) | (alpha & 0xFF);
+}
+
+stock GetRGBAFromColor(color, &red, &green, &blue, &alpha)
+{
+    red = (color >> 24) & 0xFF; green = (color >> 16) & 0xFF; blue  = (color >> 8)  & 0xFF; alpha = color & 0xFF;
 }
